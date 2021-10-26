@@ -1,0 +1,16 @@
+{
+  "name": "property-search",
+  "version": "1.0.0",
+  "description": "Lookup property addresses.",
+  "main": "index.js",
+  "dependencies": {
+    "csv-parse": "^4.16.3",
+    "json2csv": "^5.0.6",
+    "node-fetch": "2.6.5"
+  },
+  "devDependencies": {},
+  "scripts": {},
+  "author": "",
+  "license": "GPL v3",
+  "private": true
+}
