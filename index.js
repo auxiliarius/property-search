@@ -34,7 +34,7 @@ let unlisted_counter = 0;
 			// Could break a few rows into multiple threads at once for quicker processing,
 			// but it sort of self-rate-limits itself which is likely good to prevent the website from getting mad :).
 			const address = await findAddress( lookupID );
-			if ( address === 'Unlisted Address' ) {
+			if ( address.street === 'unknown' ) {
 				unlisted_counter++;
 
 				const successfulLookups = counter - unlisted_counter;
@@ -45,8 +45,8 @@ let unlisted_counter = 0;
 				}
 			}
 
-			// Bit hacky, but easy way to put the address column at the front.
-			csvData.push( { ...[ address ].concat( Object.values( row ) ) } );
+			// Bit hacky, but easy way to put the address info at the front.
+			csvData.push( { ...[ address.street, address.city, address.zip, address.google ].concat( Object.values( row ) ) } );
 
 			if ( counter % 100 == 0 ) {
 				console.log( `Processed: ${counter}/${csvRows.length}. Unlisted count: ${unlisted_counter}` );
@@ -83,10 +83,62 @@ async function findAddress( lookupID ) {
 
 	const body = await response.text();
 	if ( -1 === body.indexOf( '<table>' ) || -1 === body.indexOf( '<h5>' ) ) {
-		return 'Unlisted Address';
+		return {
+			street: 'unknown',
+			city: 'unknown',
+			zip: 'unknown',
+			google: 'unknown',
+		};
 	}
 
 	// NOTE: Also fragile, as they could change the HTML makeup of the site.
 	const addressTable = body.substring( body.indexOf( '<table>' ), body.indexOf( '</table>' ) + 8 );
-	return addressTable.substring( addressTable.indexOf( '<h5>' ) + 4, addressTable.indexOf( '</h5>' ) );
+	let streetAddress = addressTable.substring( addressTable.indexOf( '<h5>' ) + 4, addressTable.indexOf( '</h5>' ) ).trim();
+	let cityZip = await getZipAndCity( streetAddress );
+
+	return {
+		street: streetAddress,
+		...cityZip,
+	};
+}
+
+// More hacks :). Search the address w/ google, and parse the results to find the city/zip.
+// Probably locale-dependant, but should be fine if running from within the target area?
+async function getZipAndCity( streetAddress ) {
+	if ( 0 === streetAddress.length || -1 !== streetAddress.indexOf( 'UNASSIGNED' ) ) {
+		return { city: 'unknown', zip: 'unknown', google: 'unavailable' };
+	}
+
+	const response = await fetch( `https://www.google.com/search?q=${encodeURIComponent( streetAddress )}`, {
+		'headers': {
+			'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36',
+			'accept': '*/*',
+			'pragma': 'no-cache',
+			'cache-control': 'no-cache',
+		},
+		'method': 'GET',
+	} );
+
+	const body = await response.text();
+	let cityZipNode = '<span class="desktop-title-subcontent">';
+
+	if ( -1 === body.indexOf( 'Map Results</h2>' ) || -1 === body.indexOf( cityZipNode ) ) {
+		return { city: 'unknown', zip: 'unknown', google: 'unavailable' };
+	}
+
+	let cityZipArea = body.substring( body.indexOf( cityZipNode ), body.indexOf( cityZipNode ) + 200 );
+
+	// Example: Rockford, IL 61101
+	let cityZip = cityZipArea.substring( cityZipNode.length, cityZipArea.indexOf( '</span>' ) );
+
+	// Something went wrong if it's not in IL.
+	if ( -1 === cityZip.indexOf( ', IL' ) ) {
+		return { city: 'unknown', zip: 'unknown', google: 'unavailable' };
+	}
+
+	return {
+		city: cityZip.substring( 0, cityZip.indexOf( ',' ) ),
+		zip: cityZip.substring( cityZip.length - 5, cityZip.length ),
+		google: `https://www.google.com/search?q=${encodeURIComponent( streetAddress )}`,
+	}
 }
