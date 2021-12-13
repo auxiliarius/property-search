@@ -24,9 +24,15 @@ let unlisted_counter = 0;
 		const csvRows = csvToJSON( fileData, { headers: false } );
 
 		// B) Loop over array and insert the address after looking it up.
-		let csvData = [];
+		const writeStream = fs.createWriteStream( fileName.replace( '.csv', '-new.csv' ), { flags: 'a' } );
 		for ( const row of csvRows ) {
 			counter++
+
+			const rowStart = process.argv[3];
+			if ( rowStart !== null && counter < rowStart ) {
+				// Keep skipping until we reach the row we want to start back up on (in case previous failure/timeout).
+				continue;
+			}
 
 			// NOTE: This bit is somewhat fragile. The second column in the CSV must be the lookup ID.
 			const lookupID = row[1];
@@ -45,17 +51,15 @@ let unlisted_counter = 0;
 				}
 			}
 
-			// Bit hacky, but easy way to put the address info at the front.
-			csvData.push( { ...[ address.street, address.city, address.zip, address.google ].concat( Object.values( row ) ) } );
+			// C) Write the new csv row to a new file.
+			const newRow = { ...[ address.street, address.city, address.zip, address.google ].concat( Object.values( row ) ) };
+			writeStream.write( jsonToCSV( [ newRow ], { header: false } ) + "\n" );
 
 			if ( counter % 100 == 0 ) {
 				console.log( `Processed: ${counter}/${csvRows.length}. Unlisted count: ${unlisted_counter}` );
 			}
 		}
 
-		// C) Create new CSV file with the added address data.
-		const result = jsonToCSV( csvData, { header: false } );
-		fs.writeFileSync( fileName.replace( '.csv', '-new.csv' ), result );
 		console.log( `Processing complete. New file created: ${fileName.replace( '.csv', '-new.csv' )}` );
 	} catch ( error ) {
 		console.error( 'An error occured during script processing. Error: ' + error.message );
@@ -87,7 +91,7 @@ async function findAddress( lookupID ) {
 			street: 'unknown',
 			city: 'unknown',
 			zip: 'unknown',
-			google: 'unknown',
+			google: 'unavailable',
 		};
 	}
 
@@ -104,9 +108,15 @@ async function findAddress( lookupID ) {
 
 // More hacks :). Search the address w/ google, and parse the results to find the city/zip.
 // Probably locale-dependant, but should be fine if running from within the target area?
+const cachedCityZip = {};
 async function getZipAndCity( streetAddress ) {
 	if ( 0 === streetAddress.length || -1 !== streetAddress.indexOf( 'UNASSIGNED' ) ) {
 		return { city: 'unknown', zip: 'unknown', google: 'unavailable' };
+	}
+
+	// Google isn't a big fan of lots of requests from one IP, so try to avoid when possible via local caching.
+	if ( streetAddress in cachedCityZip ) {
+		return cachedCityZip[streetAddress];
 	}
 
 	const response = await fetch( `https://www.google.com/search?q=${encodeURIComponent( streetAddress )}`, {
@@ -120,25 +130,23 @@ async function getZipAndCity( streetAddress ) {
 	} );
 
 	const body = await response.text();
+
 	let cityZipNode = '<span class="desktop-title-subcontent">';
-
-	if ( -1 === body.indexOf( 'Map Results</h2>' ) || -1 === body.indexOf( cityZipNode ) ) {
-		return { city: 'unknown', zip: 'unknown', google: 'unavailable' };
-	}
-
 	let cityZipArea = body.substring( body.indexOf( cityZipNode ), body.indexOf( cityZipNode ) + 200 );
-
 	// Example: Rockford, IL 61101
 	let cityZip = cityZipArea.substring( cityZipNode.length, cityZipArea.indexOf( '</span>' ) );
 
 	// Something went wrong if it's not in IL.
 	if ( -1 === cityZip.indexOf( ', IL' ) ) {
-		return { city: 'unknown', zip: 'unknown', google: 'unavailable' };
+		cachedCityZip[streetAddress] = { city: 'unknown', zip: 'unknown', google: 'unavailable' };
+		return cachedCityZip[streetAddress];
 	}
 
-	return {
+	cachedCityZip[streetAddress] = {
 		city: cityZip.substring( 0, cityZip.indexOf( ',' ) ),
 		zip: cityZip.substring( cityZip.length - 5, cityZip.length ),
 		google: `https://www.google.com/search?q=${encodeURIComponent( streetAddress )}`,
-	}
+	};
+
+	return cachedCityZip[streetAddress];
 }
